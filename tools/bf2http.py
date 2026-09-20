@@ -95,6 +95,11 @@ DANGEROUS_COMMANDS = {
     'bf2unban': 'unban (needs arg=name)',
     'pmkill': 'kill (needs arg=name)',
     'pmveh': 'spawn vehicle (needs arg=name) -- KNOWN TO CRASH THE SERVER',
+    # evalpy: runs arbitrary Python inside the game server. Kept here rather
+    # than in SAFE_COMMANDS because it is total control of the process, but it
+    # is necessary for development (syntax checks, probes) and its absence made
+    # a bug hunt much harder than it needed to be.
+    'eval': 'run arbitrary Python inside the game server (evalpy) -- FULL CONTROL',
 }
 
 

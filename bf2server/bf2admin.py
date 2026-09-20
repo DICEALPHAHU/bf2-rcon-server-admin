@@ -106,6 +106,34 @@ def rcon(cmd):
         return 'ERR:' + str(sys.exc_info()[1])
 
 
+def _find_events_module():
+    """Locate the already-loaded bf2events module.
+
+    Why this is not just sys.modules.get('bf2events'): BF2 loads the admin
+    package as a package, so the sibling lands in sys.modules under the
+    DOTTED name 'standard_admin.bf2events' (verified on a live server).
+    Both sys.modules.get('bf2events') and __import__('bf2events') therefore
+    miss it and raise ImportError, even though the module is live and its
+    emit() works. Match on the suffix instead of guessing the package name.
+    """
+    mod = sys.modules.get('bf2events')
+    if mod is not None:
+        return mod
+    try:
+        for name in sys.modules.keys():
+            if name == 'bf2events' or name.endswith('.bf2events'):
+                return sys.modules[name]
+    except:
+        pass
+    try:
+        mod = globals().get('bf2events')
+        if mod is not None:
+            return mod
+    except:
+        pass
+    return None
+
+
 def emit_event(kind, payload):
     """Append an event to the bf2events queue, if that module is loaded.
 
@@ -114,16 +142,22 @@ def emit_event(kind, payload):
     same queue bf2events publishes and let one poller see everything.
 
     Never raises: bf2events is optional and this module must keep working
-    without it. The already-imported module is used when present to avoid
-    re-executing its top level.
+    without it. A failure is logged rather than silently swallowed -- an earlier
+    version returned False with no trace and cost an afternoon of "why is the
+    ban event not in the queue".
     """
     try:
-        mod = sys.modules.get('bf2events')
+        mod = _find_events_module()
         if mod is None:
             mod = __import__('bf2events')
         mod.emit(kind, payload)
         return True
     except:
+        try:
+            log('emit_event(%s) FAILED: %s: %s'
+                % (kind, str(sys.exc_info()[0]), str(sys.exc_info()[1])))
+        except:
+            pass
         return False
 
 
