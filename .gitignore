@@ -1,0 +1,19 @@
+# OS / editor junk
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+
+# BF2 python is 2.3.4; never commit its caches
+*.pyc
+*.pyo
+
+# runtime output from the server modules / tools
+*.log
+*.queue
+*.dsh-orig
+*.deepseek-backup
+server-console.log
+
+# keep the example logs that document verified behaviour
+!docs/*.log
