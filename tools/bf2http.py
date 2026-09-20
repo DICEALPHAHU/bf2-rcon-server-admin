@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 bf2http.py -- HTTP bridge between a chat bot and the BF2 server's RCON.
 
@@ -53,23 +53,27 @@ from urllib.parse import urlparse, parse_qs
 
 EOM = b'\x04'
 
-# pmadmin commands a bot is allowed to invoke by name. Deliberately excludes
-# pmban/pmkick/pmkill: destructive actions should be explicitly enabled, not
+# pmadmin/bf2admin commands a bot is allowed to invoke by name. Deliberately
+# excludes kick/ban/kill: destructive actions should be explicitly enabled, not
 # reachable by guessing a name.
 SAFE_COMMANDS = {
-    'pmmap': 'map information',
-    'pmplayers': 'player list',
+    'bf2player': 'player list with cdkey and ip',
+    'bf2nowmap': 'map / mode / size',
+    'bf2banlist': 'ban lists',
+    'bf2check': 'self check',
+    'bf2events': 'drain the event queue',
+    'pmmap': 'map information (legacy)',
+    'pmplayers': 'player list (legacy)',
     'pmpos': 'player details (needs arg=name)',
-    'pmbanlist': 'ban list',
-    'pmcheck': 'self check',
 }
 
 # destructive ones, only reachable when --allow-dangerous is set
 DANGEROUS_COMMANDS = {
-    'pmkick': 'kick (needs arg=name)',
-    'pmban': 'ban (needs arg=name)',
+    'bf2kick': 'kick (needs arg=name)',
+    'bf2ban': 'ban, needs arg="name minutes reason"',
+    'bf2unban': 'unban (needs arg=name)',
     'pmkill': 'kill (needs arg=name)',
-    'pmveh': 'spawn vehicle (needs arg=name)',
+    'pmveh': 'spawn vehicle (needs arg=name) -- KNOWN TO CRASH THE SERVER',
 }
 
 
@@ -176,12 +180,78 @@ def parse_kv(text):
     return out
 
 
-def parse_players(text):
-    """Parse the pmplayers table into a list of dicts."""
+def parse_bf2players(text):
+    """Parse the bf2player table.
+
+    Verified output shape:
+        id | Playername | CDKey | IP
+        ----------------------------------------
+        0 | defaultPlayer | 0cecca... | 192.168.43.51
+    """
     players = []
     for line in text.split('\n'):
         s = line.strip()
-        # rows look like: 0      2     SomeName
+        if not s or s.startswith('-') or s.startswith('id |'):
+            continue
+        parts = [p.strip() for p in s.split('|')]
+        if len(parts) < 4:
+            continue
+        if not parts[0].isdigit():
+            continue
+        players.append({
+            'index': int(parts[0]),
+            'name': parts[1],
+            'key': parts[2],
+            'ip': parts[3],
+        })
+    return players
+
+
+def parse_nowmap(text):
+    """Parse bf2nowmap output: 'Dalian_Plant | gpm_cq | 64'."""
+    for line in text.split('\n'):
+        s = line.strip()
+        if not s or '|' not in s:
+            continue
+        parts = [p.strip() for p in s.split('|')]
+        if len(parts) >= 3:
+            return {'map': parts[0], 'game_mode': parts[1], 'size': parts[2]}
+    return {}
+
+
+def parse_events(text):
+    """Parse bf2events output into structured events.
+
+    Lines are tab separated: <seq> <epoch> <kind> <payload...>
+    The first line is a count such as "3 event(s)", which is skipped.
+    """
+    events = []
+    for line in text.split('\n'):
+        raw = line.rstrip()
+        if not raw or '\t' not in raw:
+            continue
+        parts = raw.split('\t')
+        if len(parts) < 3:
+            continue
+        if not parts[0].strip().isdigit():
+            continue
+        body = parts[3:]
+        ev = {
+            'seq': int(parts[0]),
+            'time': int(parts[1]) if parts[1].strip().isdigit() else 0,
+            'kind': parts[2],
+            'fields': body,
+            'line': raw,
+        }
+        events.append(ev)
+    return events
+
+
+def parse_players(text):
+    """Parse the old pmplayers table into a list of dicts (kept for /status)."""
+    players = []
+    for line in text.split('\n'):
+        s = line.strip()
         m = re.match(r'^(\d+)\s+(\d+)\s+(.+)$', s)
         if m:
             players.append({
@@ -194,16 +264,12 @@ def parse_players(text):
 
 def summarise(rcon_client):
     """Build the payload used by /status."""
-    map_text = rcon_client.send('pmmap')
-    info = parse_kv(map_text)
-    players_text = rcon_client.send('pmplayers')
-    players = parse_players(players_text)
+    info = parse_nowmap(rcon_client.send('bf2nowmap'))
+    players = parse_bf2players(rcon_client.send('bf2player'))
     return {
-        'map': info.get('name'),
-        'world_size': info.get('world_size'),
+        'map': info.get('map'),
         'game_mode': info.get('game_mode'),
-        'max_players': info.get('max_players'),
-        'server_name': info.get('server_name'),
+        'size': info.get('size'),
         'player_count': len(players),
         'players': players,
     }
@@ -264,16 +330,37 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == '/players':
-                text = self.rcon_client.send('pmplayers')
+                text = self.rcon_client.send('bf2player')
                 self._json(200, {'ok': True, 'data': {
-                    'players': parse_players(text),
+                    'players': parse_bf2players(text),
                     'raw': text,
                 }})
                 return
 
             if path == '/map':
-                text = self.rcon_client.send('pmmap')
-                self._json(200, {'ok': True, 'data': parse_kv(text), 'raw': text})
+                text = self.rcon_client.send('bf2nowmap')
+                self._json(200, {'ok': True, 'data': parse_nowmap(text), 'raw': text})
+                return
+
+            if path == '/events':
+                # Drain (default) or peek the bf2events queue. Exists so a chat
+                # bot does not need --allow-raw merely to collect events.
+                mode = (qs.get('mode') or ['drain'])[0].lower()
+                if mode == 'peek':
+                    cmd = 'bf2events peek'
+                elif mode == 'clear':
+                    mode = 'clear'
+                    cmd = 'bf2events clear'
+                else:
+                    mode = 'drain'
+                    cmd = 'bf2events'
+                text = self.rcon_client.send(cmd)
+                self._json(200, {
+                    'ok': True,
+                    'mode': mode,
+                    'events': parse_events(text),
+                    'raw': text,
+                })
                 return
 
             if path == '/player':
@@ -332,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
                 'ok': False,
                 'error': 'unknown endpoint',
                 'endpoints': ['/status', '/players', '/map', '/player?name=',
-                              '/healthz', 'POST /cmd', '/raw?cmd='],
+                              '/healthz', '/events', 'POST /cmd', '/raw?cmd='],
             })
 
         except RconError as e:
