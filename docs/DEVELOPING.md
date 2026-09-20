@@ -238,6 +238,60 @@ admin.listPlayers 解析:  'defaultPlayer'     ← 无空格
 | 外部 RCON 敲**引擎命令** | `exec mapList.list` |
 | **Python 内部** `host.rcon_invoke` | `rcon('mapList.list')` ← **不能加 exec** |
 
+### ⚠️ 用 Python 2.3.4 校验语法时，必须用文本模式读文件
+
+这是个**极易误判**的坑：这个内嵌的 2.3.4 构建（`MSC v.1310, May 26 2005`）
+在 `compile()` 收到**原始字节**时**不认 CRLF 行尾**，会报
+`invalid syntax (xxx.py, line 2)`，而报错行往往只是文件里的一个空行 ——
+看起来像文件坏了，其实文件完全正常。
+
+实测（同一份文件，三种读取模式）：
+
+| 读取模式 | LF 文件 | CRLF 文件 |
+|---|---|---|
+| `open(p, 'r')` | OK | **OK** |
+| `open(p, 'rU')` | OK | **OK** |
+| `open(p, 'rb')` | OK | **FAIL: invalid syntax** |
+
+原因是 Python 2.3 的 import 机制用**文本模式**读源码，universal newlines 会把
+CRLF 规范化成 LF；用 `'rb'` 就把原始 `\r\n` 直接喂给了编译器。
+
+**所以**：
+
+* 校验服务端源码一律用 `open(p, 'rU').read()`，**不要用 `'rb'`**。
+* 原版 BF2 自带的 `autobalance.py` / `tk_punish.py` / `playerconnect.py`
+  全是 CRLF。用 `'rb'` 校验它们会全部"失败"，但它们实际上完全正常。
+* 自己写的模块建议统一用 **LF**（仓库里也都是 LF），两种模式都不会有歧义。
+
+一段可直接跑的服务端侧校验（经 RCON 触发，`_check.py` 放 standard_admin 下）：
+
+```python
+# 触发：eval execfile("D:\...\Admin\standard_admin\_check.py")
+import sys
+DIR = r'D:\BF2ServerForDeepseek\Battlefield 2\Admin\standard_admin'
+out = []
+for name in ['__init__.py', 'bf2admin.py', 'bf2events.py', 'pmadmin.py',
+             'evalpy.py', 'zzdoctor.py', 'autobalance.py', 'tk_punish.py',
+             'playerconnect.py']:
+    p = DIR + chr(92) + name
+    try:
+        compile(open(p, 'rU').read(), p, 'exec')   # rU，不是 rb
+        out.append(name + ' OK')
+    except:
+        out.append(name + ' FAIL: ' + str(sys.exc_info()[1]))
+open(DIR + chr(92) + '_check.out', 'w').write(chr(10).join(out))
+```
+
+另外记住两件在这个 Python 里做不到的事：
+
+* **`binascii` 不存在** —— `base64` 依赖它，`import base64` 会直接
+  `ImportError: No module named binascii`。想从 RCON 传多行脚本进去，
+  别指望 base64 编码。
+* **`os` 被阉割** —— 别用 `os.path` 做路径拼接，直接字符串拼 `chr(92)`。
+
+经 RCON 传参时还有个行为要知道：引擎会把命令按空格切分，但**引号内的空格是
+安全的**（`eval ctx.write("a b c")` 正常）。多词参数请用引号包住。
+
 ## 加完后的自检
 
 ```powershell

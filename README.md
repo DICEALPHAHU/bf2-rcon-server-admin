@@ -43,6 +43,9 @@ docs/
   QUICKSTART.md    命令怎么敲、日常用法（先看这个）
   BF2-COMMANDS.md  bf2* 命令详解 + 实测输出 + 重要发现
   USAGE.md         完整文档：验证记录、崩溃实验、技术约束
+  BOT-INTEGRATION.md  QQ 机器人对接全流程（服务端 + 桥接 + 机器人）
+integrations/
+  unibot/Bf2.py    NoneBot2 扩展，实测可用的群内指令 + 事件推送
 ```
 
 ---
@@ -134,14 +137,17 @@ python tools/bf2http.py --port 8099 --token 你的密钥
 |---|---|
 | `GET /status` | 地图 + 模式 + 人数 + 玩家名单 |
 | `GET /players` | 玩家列表（含 CD-key / IP） |
-| `GET /player?name=X` | 某玩家坐标 |
+| `GET /player?name=X` | 某玩家坐标（解析成 `{x,y,z}`）、载具、是否已出生 |
 | `GET /map` | 地图信息 |
+| `GET /bans` | 封禁列表（引擎的 IP/Key + 自己的记录） |
+| `GET /events/wait?timeout=25` | **长轮询**：有事件立刻返回，否则挂起到超时 |
+| `GET /join` `/leave` | 自上次调用以来进服 / 退服的玩家 |
 | `POST /cmd` | `{"cmd":"bf2kick","arg":"某人"}` |
 
 默认**只读**（踢人/封禁要 `--allow-dangerous`）、**只监听 127.0.0.1**、
 **`/raw` 关闭**。绑非回环地址却没给 `--token` 会直接拒绝启动。
 
-### 事件推送（机器人定时拉）
+### 事件推送（机器人长轮询拉）
 
 `bf2events.py` 把服务端事件写进队列，机器人轮询取走：
 
@@ -173,53 +179,43 @@ python tools/bf2rcon.py "bf2events chat on"  # 把聊天也纳入
 | `leave` | 玩家退服 | 昵称、当前人数 |
 | `spawn` | 玩家出生 | 昵称、坐标 |
 | `killed` | 玩家被杀 | 死者、凶手、武器 |
+| `ban` | 管理员 `bf2ban` | 昵称、时长、原因、IP、CD-key |
+| `unban` | 管理员 `bf2unban` | 昵称、IP、CD-key |
 | `chat` | 聊天（默认关闭） | 昵称、频道、内容 |
 | `round` | 回合状态变化 | 状态、地图 |
+
+> `ban` / `unban` 不是游戏引擎事件（引擎不会为管理员命令触发回调），
+> 是 `bf2admin.py` 执行封禁时主动往同一个队列里追加的，这样机器人只需要
+> 盯一个队列。它们需要**重启服务端**才生效。
 
 **为什么用轮询而不是 webhook**：BF2 端不能阻塞（会卡游戏），
 而且多数 QQ 机器人框架改动核心风险高。轮询只需在插件里起一个后台任务，
 机器人挂了队列也只是堆积，不影响游戏。
 
-### 机器人插件伪代码
+### 现成的机器人扩展
 
-```python
-# 任何基于 OneBot 的框架（go-cqhttp / aiocqhttp / NoneBot 等）都适用
-import requests
+本仓库自带一个**实测可用**的 NoneBot2 扩展，直接复制即可：
 
-BRIDGE = "http://127.0.0.1:8099"
-TOKEN  = "你的密钥"
-
-def on_group_message(event):
-    text = event.raw_message.strip()
-    if not text.startswith("bf2"): return
-
-    cmd = text[3:].strip()          # "player" / "pos ALPHAHU" / "nowmap"
-    if cmd == "player":
-        r = requests.get(BRIDGE + "/players", params={"token": TOKEN}, timeout=5)
-        data = r.json()
-        lines = ["id | Playername | CDKey | IP"]
-        for p in data["data"]["players"]:
-            lines.append("%s | %s | %s | %s" % (p["index"], p["name"], p["key"], p["ip"]))
-        reply("\n".join(lines))
-    elif cmd.startswith("pos "):
-        name = cmd[4:]
-        r = requests.get(BRIDGE + "/player", params={"name": name, "token": TOKEN}, timeout=5)
-        reply(str(r.json()))
-
-# 事件推送：后台任务定时 drain
-def push_loop():
-    while True:
-        r = requests.get(BRIDGE + "/raw", params={"cmd": "bf2events", "token": TOKEN}, timeout=5)
-        for line in r.json().get("raw", "").split("\n"):
-            parts = line.split("\t")
-            if len(parts) >= 3:
-                kind, body = parts[2], "\t".join(parts[3:])
-                if kind == "join":  send_group("[BF2] %s 加入了服务器" % body.split("\t")[0])
-                if kind == "leave": send_group("[BF2] %s 离开了服务器" % body.split("\t")[0])
-        time.sleep(10)
+```
+integrations/unibot/Bf2.py           -> UniBot/Extensions/Bf2.py
+integrations/unibot/Bf2.toml.example -> UniBot/Config/Extensions/Bf2.toml
 ```
 
-> `/raw` 需要桥接加 `--allow-raw`，或者给 `bf2events` 加个专用端点（见下）。
+装好后群里的效果：
+
+```
+/bf2 status          -> 地图、模式、人数、在线名单
+/bf2 players         -> 在线玩家 + IP
+/bf2 pos defaultPlayer -> 坐标 774.4 / 159.8 / -53.0、载具、是否已出生
+/bf2 map / /bf2 bans
+
+【BF2】
+✅ defaultPlayer 进入了服务器
+🔨 cheater 被管理员封禁 时长 25 分钟，原因：aimbot
+```
+
+完整安装与配置见 **[docs/BOT-INTEGRATION.md](docs/BOT-INTEGRATION.md)**。
+这个扩展不依赖任何 Minecraft 相关的东西，纯 HTTP + NoneBot2 指令框架。
 
 ---
 

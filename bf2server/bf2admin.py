@@ -106,6 +106,27 @@ def rcon(cmd):
         return 'ERR:' + str(sys.exc_info()[1])
 
 
+def emit_event(kind, payload):
+    """Append an event to the bf2events queue, if that module is loaded.
+
+    Admin actions (ban / unban) are not game events, so the engine never raises
+    a handler for them. A chat bot still wants to be told, so we push into the
+    same queue bf2events publishes and let one poller see everything.
+
+    Never raises: bf2events is optional and this module must keep working
+    without it. The already-imported module is used when present to avoid
+    re-executing its top level.
+    """
+    try:
+        mod = sys.modules.get('bf2events')
+        if mod is None:
+            mod = __import__('bf2events')
+        mod.emit(kind, payload)
+        return True
+    except:
+        return False
+
+
 def caller(ctx):
     return getattr(ctx, 'player', None)
 
@@ -570,6 +591,9 @@ def cmd_ban(ctx, playerId, argv):
     msg = '%s has been banned. reason:%s' % (real, reason)
     rcon('admin.servermessage "%s"' % msg)
     out(ctx, '\n%s\n' % msg)
+    # 5) tell the chat bot, through the same queue bf2events publishes
+    emit_event('ban', '%s\tminutes=%s\treason=%s\tip=%s\tkey=%s'
+               % (real, minutes, reason, nz(ip, '-'), nz(key, '-')))
     log('bf2ban name=%s ip=%s key=%s minutes=%s reason=%r'
         % (real, ip, key, minutes, reason))
 
@@ -644,6 +668,7 @@ def cmd_unban(ctx, playerId, argv):
     msg = '%s has been unbanned' % display
     rcon('admin.servermessage "%s"' % msg)
     out(ctx, '\n%s\n' % msg)
+    emit_event('unban', '%s\tip=%s\tkey=%s' % (display, nz(ip, '-'), nz(key, '-')))
     log('bf2unban name=%s ip=%s key=%s' % (display, ip, key))
 
 
@@ -698,6 +723,28 @@ def cmd_banlist(ctx, playerId):
         out(ctx, '  %-20s %s | %s | %s min | %s\n' % (k, v[0], v[1], v[3], v[2]))
 
 
+def cmd_banrecord(ctx, playerId):
+    """Machine readable dump of our own ban records, one line per ban.
+
+    Exists because bf2banlist is written for a human reading the in-game
+    console: it has '=== section ===' banners and a padded column layout that a
+    parser has to guess at. This prints a fixed ' | ' separated record with a
+    count banner so a bot or an HTTP bridge can read it without heuristics.
+
+        bf2banrecord <count>
+        <name> | <ip> | <key> | <minutes> | <reason>
+    """
+    keys = BAN_RECORD.keys()
+    keys.sort()
+    out(ctx, 'bf2banrecord %d\n' % len(keys))
+    for k in keys:
+        v = BAN_RECORD[k]
+        # in-memory record is (ip, key, reason, minutes); the on-disk line also
+        # carries a timestamp and the original spelling of the name
+        out(ctx, '%s | %s | %s | %s | %s\n'
+            % (k, nz(v[0], '-'), nz(v[1], '-'), nz(v[3], '-'), nz(v[2], '-')))
+
+
 def cmd_check(ctx, playerId):
     """Self check that needs no player."""
     out(ctx, '=== bf2admin %s self check ===\n' % VERSION)
@@ -736,19 +783,23 @@ def rcmd_bf2nowmap(self, ctx, cmd):
 def rcmd_bf2banlist(self, ctx, cmd):
     cmd_banlist(ctx, caller(ctx))
 
+def rcmd_bf2banrecord(self, ctx, cmd):
+    cmd_banrecord(ctx, caller(ctx))
+
 def rcmd_bf2check(self, ctx, cmd):
     cmd_check(ctx, caller(ctx))
 
 
 CMDS = {
-    'bf2player':  rcmd_bf2player,
-    'bf2pos':     rcmd_bf2pos,
-    'bf2kick':    rcmd_bf2kick,
-    'bf2ban':     rcmd_bf2ban,
-    'bf2unban':   rcmd_bf2unban,
-    'bf2nowmap':  rcmd_bf2nowmap,
-    'bf2banlist': rcmd_bf2banlist,
-    'bf2check':   rcmd_bf2check,
+    'bf2player':    rcmd_bf2player,
+    'bf2pos':       rcmd_bf2pos,
+    'bf2kick':      rcmd_bf2kick,
+    'bf2ban':       rcmd_bf2ban,
+    'bf2unban':     rcmd_bf2unban,
+    'bf2nowmap':    rcmd_bf2nowmap,
+    'bf2banlist':   rcmd_bf2banlist,
+    'bf2banrecord': rcmd_bf2banrecord,
+    'bf2check':     rcmd_bf2check,
 }
 
 

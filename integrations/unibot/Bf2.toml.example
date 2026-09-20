@@ -1,0 +1,36 @@
+# BF2 服务器接入扩展配置
+# 对应 Extensions/Bf2.py 的 Bf2Config，可在 WebUI 扩展页面里改。
+# 修改后热重载生效，无需重启机器人。
+
+# ===== 桥接连接 =====
+
+# bf2http.py 的地址。桥接和机器人跑在同一台机器上，保持 127.0.0.1 即可。
+bridge_url = "http://127.0.0.1:8099"
+
+# 必须和 bf2http.py 启动时的 --token 一致。桥接没设令牌就留空。
+bridge_token = "testtoken"
+
+# 单次 HTTP 请求超时（秒）。长轮询会另外加时，不受这个值限制。
+timeout = 10.0
+
+# ===== 事件推送 =====
+
+# 是否主动推送进服 / 退服 / 封禁。
+notify_enabled = true
+
+# 推送目标群，格式 "{平台}:{群ID}"，如 "qq_client:123456789"。
+# 留空则推到 Config.toml 里的 message_groups。
+notify_groups = []
+
+notify_join = true
+notify_leave = true
+notify_ban = true
+
+# 事件轮询间隔（秒）。实际长轮询挂起时间约为该值加 5 秒。
+poll_interval = 5.0
+
+# 显示在推送开头的服务器名。留空则只显示 【BF2】。
+server_name = ""
+
+# 单条推送最多列出的行数，防止刷屏。
+max_lines = 20
